@@ -3,8 +3,8 @@ services:
   strava-sync:
     build: .
     volumes:
-      - ./data/.env:/app/.env:ro
-      - ./data/.strava.tokens.json:/app/.strava.tokens.json
-      - ./data/.fittrackee.tokens.json:/app/.fittrackee.tokens.json
+      - /mnt/data/docker/volumes/strava-to-fittrackee-secrets/_data/.env:/app/.env:ro
+      - /mnt/data/docker/volumes/strava-to-fittrackee-secrets/_data/.strava.tokens.json:/app/.strava.tokens.json:ro
+      - /mnt/data/docker/volumes/strava-to-fittrackee-secrets/_data/.fittrackee.tokens.json:/app/.fittrackee.tokens.json:ro
     restart: unless-stopped
     command: ["poetry", "run", "python", "-m", "strava_to_fittrackee.s2f", "--sync", "-v", "2"]
