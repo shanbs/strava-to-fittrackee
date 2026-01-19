@@ -4,7 +4,7 @@ services:
     image: shanbs/strava-to-fittrackee
     volumes:
       - /mnt/data/docker/volumes/strava-to-fittrackee-secrets/_data/.env:/app/.env:ro
-      - /mnt/data/docker/volumes/strava-to-fittrackee-secrets/_data/.strava.tokens.json:/app/.strava.tokens.json:ro
-      - /mnt/data/docker/volumes/strava-to-fittrackee-secrets/_data/.fittrackee.tokens.json:/app/.fittrackee.tokens.json:ro
+      - /mnt/data/docker/volumes/strava-to-fittrackee-secrets/_data/.strava.tokens.json:/app/.strava.tokens.json
+      - /mnt/data/docker/volumes/strava-to-fittrackee-secrets/_data/.fittrackee.tokens.json:/app/.fittrackee.tokens.json
     restart: unless-stopped
     command: ["sh", "-c", "while true; do poetry run python -m strava_to_fittrackee.s2f --sync -v 2; sleep 3600; done"]
