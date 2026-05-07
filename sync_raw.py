@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import requests
+import psycopg2
 
 FT_HOST = os.environ.get("FITTRACKEE_HOST", "fittrackee")
 FT_PORT = os.environ.get("FITTRACKEE_PORT", "5000")
@@ -19,8 +20,24 @@ FITTRACKEE_CLIENT_SECRET = os.environ.get("FITTRACKEE_CLIENT_SECRET", "PVbysRv51
 
 STRAVA_TOKEN_PATH = "/app/.strava.tokens.json"
 FITTRACKEE_TOKEN_PATH = "/app/.fittrackee.tokens.json"
-LAST_MERGE_FILE = "/app/data/.last_merge"
 STRAVA_TO_FT_MAP = "/app/data/.strava_to_ft.json"
+
+DB_HOST = os.environ.get("POSTGRES_HOST", "fittrackee-db")
+DB_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "mysecretpassword")
+
+
+def get_db_last_workout_time():
+    try:
+        conn = psycopg2.connect(host=DB_HOST, port="5432", dbname="fittrackee", user="fittrackee", password=DB_PASSWORD)
+        cur = conn.cursor()
+        cur.execute("SELECT workout_date FROM workouts ORDER BY workout_date DESC LIMIT 1")
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            return row[0].timestamp()
+    except Exception as e:
+        print(f"  DB query failed: {e}")
+    return None
 
 
 def load_token(path):
@@ -186,23 +203,29 @@ def main():
         return
     ft_headers = {"Authorization": f"Bearer {ft_token['access_token']}"}
 
-    try:
-        with open(LAST_MERGE_FILE) as f:
-            last_merge = f.read().strip()
-        if last_merge:
-            after_ts = datetime.fromisoformat(last_merge).timestamp()
-        else:
-            after_ts = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
-    except FileNotFoundError:
+    last_ts = get_db_last_workout_time()
+    if last_ts:
+        after_ts = last_ts - 300
+    else:
         after_ts = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
     print(f"Syncing Strava activities after {datetime.fromtimestamp(after_ts).strftime('%Y-%m-%d %H:%M')}")
 
-    activities = fetch_strava_activities(after_ts, strava_headers)
-    print(f"Found {len(activities)} new activities")
-
     strava_to_ft = {}
+    try:
+        with open(STRAVA_TO_FT_MAP) as f:
+            strava_to_ft = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
 
-    for act in activities:
+    activities = fetch_strava_activities(after_ts, strava_headers)
+    already = {int(k) for k in strava_to_ft}
+    new_acts = [a for a in activities if a["id"] not in already]
+    skipped = len(activities) - len(new_acts)
+    if skipped:
+        print(f"Skipped {skipped} already-imported activities")
+    print(f"Found {len(new_acts)} new activities to sync")
+
+    for act in new_acts:
         act_id = act["id"]
         act_type = act.get("type", "")
         sport_id = get_sport_id(act_type)

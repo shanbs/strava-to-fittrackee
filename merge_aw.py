@@ -4,10 +4,11 @@
 import os
 import json
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from collections import defaultdict
 from email.utils import parsedate_to_datetime
 import requests
+import psycopg2
 
 FT_HOST = os.environ.get("FITTRACKEE_HOST", "fittrackee")
 FT_PORT = os.environ.get("FITTRACKEE_PORT", "5000")
@@ -20,8 +21,24 @@ FITTRACKEE_CLIENT_SECRET = os.environ.get("FITTRACKEE_CLIENT_SECRET", "PVbysRv51
 
 STRAVA_TOKEN_PATH = "/app/.strava.tokens.json"
 FITTRACKEE_TOKEN_PATH = "/app/.fittrackee.tokens.json"
-LAST_MERGE_FILE = "/app/data/.last_merge"
 STRAVA_TO_FT_MAP = "/app/data/.strava_to_ft.json"
+
+DB_HOST = os.environ.get("POSTGRES_HOST", "fittrackee-db")
+DB_PASSWORD = os.environ.get("POSTGRES_PASSWORD", "mysecretpassword")
+
+
+def get_db_last_merged_time():
+    try:
+        conn = psycopg2.connect(host=DB_HOST, port="5432", dbname="fittrackee", user="fittrackee", password=DB_PASSWORD)
+        cur = conn.cursor()
+        cur.execute("SELECT workout_date FROM workouts WHERE title LIKE '%Merged%' ORDER BY workout_date DESC LIMIT 1")
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            return row[0].timestamp()
+    except Exception as e:
+        print(f"  DB query failed: {e}")
+    return None
 
 
 def load_token(path):
@@ -267,14 +284,10 @@ def main():
         return
     ft_headers = {"Authorization": f"Bearer {ft_token['access_token']}"}
 
-    try:
-        with open(LAST_MERGE_FILE) as f:
-            last_merge = f.read().strip()
-        if last_merge:
-            after_ts = datetime.fromisoformat(last_merge).timestamp()
-        else:
-            after_ts = (datetime.now() - timedelta(days=7)).timestamp()
-    except FileNotFoundError:
+    last_ts = get_db_last_merged_time()
+    if last_ts:
+        after_ts = last_ts - 300
+    else:
         after_ts = (datetime.now() - timedelta(days=7)).timestamp()
 
     print(f"Merging activities after {datetime.fromtimestamp(after_ts).strftime('%Y-%m-%d')}")
@@ -355,8 +368,6 @@ def main():
 
     dedup_workouts(ft_headers, after_ts, strava_to_ft)
 
-    with open(LAST_MERGE_FILE, "w") as f:
-        f.write(datetime.now(timezone.utc).isoformat())
     print("Done!")
 
 
