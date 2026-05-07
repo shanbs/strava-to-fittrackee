@@ -166,11 +166,17 @@ print(f"Cycling activities: {len(cycling)}")
 synced = 0
 for act in cycling:
     if act['id'] in existing_ids:
+        print(f"  Skipping existing: {act['id']}")
         continue
     
     streams = get_streams(act['id'])
-    if not streams or not streams.get('latlng'):
+    if not streams:
+        print(f"  No streams: {act['id']}")
         continue
+    if not streams.get('latlng'):
+        print(f"  No latlng: {act['id']}")
+        continue
+    print(f"  Got streams: {len(streams.get('latlng',{}).get('data',[]))} pts")
     
     gpx = create_gpx(streams, act['start_date'], act.get('name', 'Ride'))
     if not gpx:
