@@ -182,14 +182,15 @@ def custom_raise_for_status(r: Response, log_api_usage: bool = True):
     (if requested), raises a custom error if the request is over the API
     limits, and then calls the requests module's ``raise_for_status()``
     """
-    fifteen_usage, daily_usage = dict(r.headers)["x-ratelimit-usage"].split(",")
-    fifteen_limit, daily_limit = dict(r.headers)["x-ratelimit-limit"].split(",")
-    if log_api_usage:
-        logger.debug(
-            "Current API usage -- 15 minute:"
-            f" {fifteen_usage}/{fifteen_limit} -- daily:"
-            f" {daily_usage}/{daily_limit}"
-        )
+    if "x-ratelimit-usage" in r.headers and "x-ratelimit-limit" in r.headers:
+        fifteen_usage, daily_usage = dict(r.headers)["x-ratelimit-usage"].split(",")
+        fifteen_limit, daily_limit = dict(r.headers)["x-ratelimit-limit"].split(",")
+        if log_api_usage:
+            logger.debug(
+                "Current API usage -- 15 minute:"
+                f" {fifteen_usage}/{fifteen_limit} -- daily:"
+                f" {daily_usage}/{daily_limit}"
+            )
     if r.status_code == 429:
         raise TooManyRequestsError("429 Too Many Requests")
     r.raise_for_status()
@@ -622,9 +623,6 @@ class Activity:
         """
         gpx = gpxpy.gpx.GPX()
 
-        # Add gpxtpx namespace for TrackPointExtension
-        gpx.namespaces["gpxtpx"] = "http://www.garmin.com/xmlschemas/TrackPointExtension/v1"
-
         # Create first track in our GPX:
         gpx_track = gpxpy.gpx.GPXTrack(
             name=self.title, description=self.type
@@ -654,18 +652,16 @@ class Activity:
                 cad_val = self.cadence[i] if has_cad and i < len(self.cadence) else None
 
                 if hr_val or cad_val:
-                    # Create extension dict that gpxpy will serialize
-                    ext_dict = {}
-                    tp_ext = {}
-
+                    tp_ext = ET.Element("TrackPointExtension")
                     if hr_val and hr_val > 0:
-                        tp_ext['hr'] = str(int(hr_val))
+                        hr_elem = ET.SubElement(tp_ext, "hr")
+                        hr_elem.text = str(int(hr_val))
                     if cad_val and cad_val > 0:
-                        tp_ext['cad'] = str(int(cad_val))
-
-                    if tp_ext:
-                        ext_dict['TrackPointExtension'] = tp_ext
-                        pt.extensions = ext_dict
+                        cad_elem = ET.SubElement(tp_ext, "cad")
+                        cad_elem.text = str(int(cad_val))
+                    ext = ET.Element("extensions")
+                    ext.append(tp_ext)
+                    pt.extensions = [ext]
 
             gpx_segment.points.append(pt)
 
@@ -721,11 +717,16 @@ class FitTrackeeConnector:
         logger.debug("Initializing FitTrackeeConnector")
         self.tokens = load_conf("FITTRACKEE_TOKEN_FILE")
         self.host = get_or_raise_env("FITTRACKEE_HOST")
+        self.port = os.environ.get("FITTRACKEE_PORT")
         self.verify = verify
         self.client_id = get_or_raise_env("FITTRACKEE_CLIENT_ID")
         self.client_secret = get_or_raise_env("FITTRACKEE_CLIENT_SECRET")
-        self.authorize_url = f"https://{self.host}/profile/apps/authorize"
-        self.base_url = f"https://{self.host}/api"
+        if self.port:
+            self.base_url = f"http://{self.host}:{self.port}/api"
+            self.authorize_url = f"http://{self.host}:{self.port}/profile/apps/authorize"
+        else:
+            self.base_url = f"https://{self.host}/api"
+            self.authorize_url = f"https://{self.host}/profile/apps/authorize"
         self.token_url = self.base_url + "/oauth/token"
         self.client = self.auth()
         self.sports = None
