@@ -128,20 +128,28 @@ def upload_gpx(gpx_content, sport_id=1):
 def delete_workout(strava_id):
     """Delete a workout from FitTrackee by Strava ID."""
     print(f"    Trying to delete strava_id {strava_id}...")
-    r = requests.get(f'{FITTRACKEE_URL}/api/workouts?per_page=100', headers=ft_headers)
-    if r.status_code != 200:
-        print(f"    Failed to get workouts: {r.status_code}")
-        return False
-    workouts = r.json()['data']['workouts']
-    print(f"    Checking {len(workouts)} workouts...")
-    for w in workouts:
-        notes = w.get('notes', '') or ''
-        print(f"      Workout {w['id']}: notes='{notes[:50]}...'")
-        if f'strava.com/activities/{strava_id}' in notes:
-            print(f"    Found workout {w['id']}, deleting...")
-            del_r = requests.delete(f'{FITTRACKEE_URL}/api/workouts/{w["id"]}', headers=ft_headers)
-            print(f"    Delete status: {del_r.status_code}")
-            return del_r.status_code == 200 or del_r.status_code == 204
+    page = 1
+    while True:
+        r = requests.get(f'{FITTRACKEE_URL}/api/workouts?per_page=100&page={page}', headers=ft_headers)
+        if r.status_code != 200:
+            print(f"    Failed to get workouts: {r.status_code}")
+            return False
+        data = r.json().get('data', {})
+        workouts = data.get('workouts', [])
+        if not workouts:
+            break
+        pagination = data.get('pagination', {})
+        print(f"    Checking page {page} ({len(workouts)} workouts)...")
+        for w in workouts:
+            notes = w.get('notes', '') or ''
+            if f'strava.com/activities/{strava_id}' in notes:
+                print(f"    Found workout {w['id']}, deleting...")
+                del_r = requests.delete(f'{FITTRACKEE_URL}/api/workouts/{w["id"]}', headers=ft_headers)
+                print(f"    Delete status: {del_r.status_code}")
+                return del_r.status_code == 200 or del_r.status_code == 204
+        if not pagination.get('has_next'):
+            break
+        page += 1
     print(f"    Not found!")
     return False
 
