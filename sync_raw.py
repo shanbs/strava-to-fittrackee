@@ -133,6 +133,9 @@ def upload_gpx(gpx_content, sport_id=1):
     files = {'file': ('activity.gpx', gpx_content, 'application/gpx+xml')}
     data = {'data': json.dumps({"sport_id": sport_id})}
     r = requests.post(f'{FITTRACKEE_URL}/api/workouts', headers=ft_headers, files=files, data=data)
+    print(f"    Upload status: {r.status_code}")
+    if r.status_code != 201:
+        print(f"    Response: {r.text[:200]}")
     return r.status_code == 201
 
 # Main
