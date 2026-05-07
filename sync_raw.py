@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Sync WITHOUT GPS filter - use raw Strava data."""
+"""Sync from Strava - accepts date range."""
 
 import requests
 import json
 import time
 import os
+import sys
 from datetime import datetime, timedelta
 
 STRAVA_TOKEN = open("/app/.strava.tokens.json").read()
@@ -19,7 +20,56 @@ FITTRACKEE_HOST = os.environ.get("FITTRACKEE_HOST", "fittrackee_app")
 FITTRACKEE_PORT = os.environ.get("FITTRACKEE_PORT", "5001")
 FITTRACKEE_URL = f"http://{FITTRACKEE_HOST}:{FITTRACKEE_PORT}"
 
-TARGET_IDS = [17675801433, 17671394514]
+# Parse command line args: --from YYYY-MM-DD --to YYYY-MM-DD
+FROM_DATE = None
+TO_DATE = None
+args = sys.argv[1:]
+for i, arg in enumerate(args):
+    if arg == '--from' and i+1 < len(args):
+        FROM_DATE = args[i+1]
+    if arg == '--to' and i+1 < len(args):
+        TO_DATE = args[i+1]
+
+if FROM_DATE:
+    print(f"Syncing from {FROM_DATE} to {TO_DATE or 'now'}")
+else:
+    print("No date range specified, doing incremental sync...")
+
+def get_strava_activities(from_date=None, to_date=None):
+    """Get Strava activities within date range."""
+    activities = []
+    page = 1
+    
+    # Build date filter
+    after_ts = None
+    before_ts = None
+    
+    if from_date:
+        after_ts = int(datetime.strptime(from_date, "%Y-%m-%d").timestamp())
+    if to_date:
+        before_ts = int((datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)).timestamp())
+    
+    while True:
+        params = {"per_page": 100, "page": page}
+        if after_ts:
+            params['after'] = after_ts
+        if before_ts:
+            params['before'] = before_ts
+        
+        r = requests.get("https://www.strava.com/api/v3/athlete/activities", 
+                         headers=strava_headers, params=params)
+        if r.status_code != 200:
+            print(f"Error fetching Strava activities: {r.status_code}")
+            break
+        data = r.json()
+        if not data:
+            break
+        activities.extend(data)
+        page += 1
+        if page > 20:  # Safety limit
+            break
+    
+    return activities
 
 def get_streams(activity_id):
     r = requests.get(f"https://www.strava.com/api/v3/activities/{activity_id}/streams", 
@@ -71,19 +121,51 @@ def upload_gpx(gpx_content, sport_id=1):
     r = requests.post(f'{FITTRACKEE_URL}/api/workouts', headers=ft_headers, files=files, data=data)
     return r.status_code == 201
 
-for act_id in TARGET_IDS:
-    r = requests.get(f"https://www.strava.com/api/v3/activities/{act_id}", headers=strava_headers)
-    act = r.json()
-    print(f"Syncing {act_id}: {act.get('name')}")
+# Main
+print("=== Fetching Strava activities ===")
+activities = get_strava_activities(FROM_DATE, TO_DATE)
+print(f"Found {len(activities)} activities")
+
+# Get existing strava IDs from FitTrackee to avoid duplicates
+existing_ids = set()
+page = 1
+while True:
+    r = requests.get(f'{FITTRACKEE_URL}/api/workouts?per_page=100&page={page}', headers=ft_headers)
+    if r.status_code != 200:
+        break
+    ws = r.json()['data']['workouts']
+    if not ws: break
+    for w in ws:
+        notes = w.get('notes', '')
+        if 'strava.com/activities/' in notes:
+            sid = notes.split('strava.com/activities/')[1].split()[0]
+            existing_ids.add(int(sid))
+    page += 1
+    if page > 10: break
+
+print(f"Existing workouts: {len(existing_ids)}")
+
+# Only sync cycling activities
+cycling = [a for a in activities if a.get('type') in ['Ride', 'VirtualRide']]
+print(f"Cycling activities: {len(cycling)}")
+
+synced = 0
+for act in cycling:
+    if act['id'] in existing_ids:
+        continue
     
-    streams = get_streams(act_id)
+    streams = get_streams(act['id'])
     if not streams or not streams.get('latlng'):
-        print(f"  No GPS")
         continue
     
     gpx = create_gpx(streams, act['start_date'], act.get('name', 'Ride'))
+    if not gpx:
+        continue
+    
     if upload_gpx(gpx):
-        print(f"  Done!")
-    time.sleep(0.5)
+        synced += 1
+        print(f"  Synced: {act['id']} - {act.get('name')[:40]}")
+    
+    time.sleep(0.3)
 
-print("Done!")
+print(f"=== Done! Synced {synced} new workouts ===")

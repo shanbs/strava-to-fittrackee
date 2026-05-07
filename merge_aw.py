@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Merge workouts - prefer Apple Watch GPS/speed, use other for cadence."""
+"""Merge workouts - accepts date range, default last 90 days."""
 
 import requests
 import json
 import time
 import os
+import sys
 from datetime import datetime, timedelta
 
 STRAVA_TOKEN = open("/app/.strava.tokens.json").read()
@@ -19,20 +20,52 @@ FITTRACKEE_HOST = os.environ.get("FITTRACKEE_HOST", "fittrackee_app")
 FITTRACKEE_PORT = os.environ.get("FITTRACKEE_PORT", "5001")
 FITTRACKEE_URL = f"http://{FITTRACKEE_HOST}:{FITTRACKEE_PORT}"
 
-# Target date
-TARGET_DATE = "2026-03-10"
+MERGE_WINDOW_MINUTES = int(os.environ.get("MERGE_WINDOW_MINUTES", "5"))
 
-def get_strava_activities():
+# Parse command line args: --from YYYY-MM-DD --to YYYY-MM-DD
+FROM_DATE = None
+TO_DATE = None
+args = sys.argv[1:]
+for i, arg in enumerate(args):
+    if arg == '--from' and i+1 < len(args):
+        FROM_DATE = args[i+1]
+    if arg == '--to' and i+1 < len(args):
+        TO_DATE = args[i+1]
+
+# Default to last 90 days if not specified
+if not FROM_DATE:
+    to_dt = datetime.now()
+    from_dt = to_dt - timedelta(days=90)
+    FROM_DATE = from_dt.strftime("%Y-%m-%d")
+    TO_DATE = to_dt.strftime("%Y-%m-%d")
+    print(f"Merging last 90 days: {FROM_DATE} to {TO_DATE}")
+elif TO_DATE:
+    print(f"Merging: {FROM_DATE} to {TO_DATE}")
+else:
+    print(f"Merging from: {FROM_DATE}")
+
+def get_strava_activities_by_date_range(from_date, to_date):
+    """Get Strava activities within date range."""
+    start_dt = datetime.strptime(from_date, "%Y-%m-%d")
+    if to_date:
+        end_dt = datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)
+    else:
+        end_dt = datetime.now()
+    
     activities = []
     page = 1
     while True:
-        r = requests.get("https://www.strava.com/api/v3/athlete/activities", headers=strava_headers, params={"per_page": 100, "page": page})
+        r = requests.get("https://www.strava.com/api/v3/athlete/activities", 
+                         headers=strava_headers, 
+                         params={"per_page": 100, "page": page,
+                                "after": int(start_dt.timestamp()),
+                                "before": int(end_dt.timestamp())})
         if r.status_code != 200: return []
         data = r.json()
         if not data: break
         activities.extend(data)
         page += 1
-    return activities
+    return [a for a in activities if a.get('type') in ['Ride', 'VirtualRide']]
 
 def get_streams(activity_id):
     r = requests.get(f"https://www.strava.com/api/v3/activities/{activity_id}/streams", 
@@ -44,21 +77,15 @@ def get_streams(activity_id):
 def merge_gpx(streams_aw, streams_other, base_time):
     """Merge: Apple Watch GPS/speed + other device cadence + HR from both if available."""
     
-    # Apple Watch has better GPS - use it as base
-    base_streams = streams_aw
-    other_streams = streams_other
+    latlng = streams_aw.get('latlng', {}).get('data', [])
+    times = streams_aw.get('time', {}).get('data', [])
+    vels = streams_aw.get('velocity_smooth', {}).get('data', [])
     
-    latlng = base_streams.get('latlng', {}).get('data', [])
-    times = base_streams.get('time', {}).get('data', [])
-    vels = base_streams.get('velocity_smooth', {}).get('data', [])
-    
-    # Get HR from both - prefer Apple Watch
     hrs_aw = streams_aw.get('heartrate', {}).get('data', [])
-    hrs_other = streams_other.get('heartrate', {}).get('data', [])
+    hrs_other = streams_other.get('heartrate', {}).get('data', []) if streams_other else []
     hrs = hrs_aw if hrs_aw else hrs_other
     
-    # Get cadence from other device (XOSS/CYCPLUS has cadence, AW may not)
-    cads = other_streams.get('cadence', {}).get('data', []) if other_streams else []
+    cads = streams_other.get('cadence', {}).get('data', []) if streams_other else []
     
     if not latlng: return None
     
@@ -70,17 +97,14 @@ def merge_gpx(streams_aw, streams_other, base_time):
         lat, lon = latlng[i]
         t = base_time + timedelta(seconds=times[i])
         
-        # HR from AW or other
         hr = None
         if i < len(hrs) and hrs[i]:
             hr = int(hrs[i])
         
-        # Cadence from XOSS/CYCPLUS
         cad = None
         if i < len(cads) and cads[i]:
             cad = int(cads[i])
         
-        # Speed from Apple Watch
         vel = vels[i] if i < len(vels) and vels[i] is not None else None
         speed_attr = f' speed="{vel:.2f}"' if vel and vel > 0 and vel < 50 else ''
         
@@ -101,23 +125,23 @@ def upload_gpx(gpx_content, sport_id=1):
     r = requests.post(f'{FITTRACKEE_URL}/api/workouts', headers=ft_headers, files=files, data=data)
     return r.status_code == 201
 
-# Main - get activities for target date
-activities = get_strava_activities()
-cycling = [a for a in activities if a.get('type') in ['Ride', 'VirtualRide'] and a['start_date'][:10] == TARGET_DATE]
+# Main - get activities for date range
+print("=== Fetching Strava activities for merge ===")
+activities = get_strava_activities_by_date_range(FROM_DATE, TO_DATE)
+print(f"Found {len(activities)} cycling activities in range")
 
-# Group by start time (within 5 minutes = same ride)
+# Group by start time (within MERGE_WINDOW_MINUTES = same ride)
 pairs = []
 used = set()
-for i, act1 in enumerate(cycling):
+for i, act1 in enumerate(activities):
     if act1['id'] in used:
         continue
-    for j, act2 in enumerate(cycling):
+    for j, act2 in enumerate(activities):
         if i == j or act2['id'] in used:
             continue
-        # Check if within 5 minutes
         t1 = datetime.fromisoformat(act1['start_date'].replace('Z', '+00:00'))
         t2 = datetime.fromisoformat(act2['start_date'].replace('Z', '+00:00'))
-        if abs((t1 - t2).total_seconds()) < 300:
+        if abs((t1 - t2).total_seconds()) < MERGE_WINDOW_MINUTES * 60:
             pairs.append((act1, act2))
             used.add(act1['id'])
             used.add(act2['id'])
@@ -125,29 +149,27 @@ for i, act1 in enumerate(cycling):
 
 print(f"Found {len(pairs)} pairs to merge")
 
+merged_count = 0
 for act1, act2 in pairs:
-    # Determine which is Apple Watch (has HR but no cadence)
     streams1 = get_streams(act1['id'])
     streams2 = get_streams(act2['id'])
+    
+    if not streams1 or not streams2:
+        continue
     
     has_hr1 = bool(streams1.get('heartrate', {}).get('data', []))
     has_cad1 = bool(streams1.get('cadence', {}).get('data', []))
     has_hr2 = bool(streams2.get('heartrate', {}).get('data', []))
     has_cad2 = bool(streams2.get('cadence', {}).get('data', []))
     
-    print(f"  {act1['id']}: HR={has_hr1}, Cad={has_cad1}")
-    print(f"  {act2['id']}: HR={has_hr2}, Cad={has_cad2}")
-    
-    # Apple Watch: has HR, no cadence
-    # XOSS/CYCPLUS: may have cadence, no HR
+    # Apple Watch: has HR, no cadence; XOSS/CYCPLUS: has cadence
     if has_hr1 and not has_cad1:
         aw, other = streams1, streams2
-        aw_act, other_act = act1, act2
+        aw_act = act1
     elif has_hr2 and not has_cad2:
         aw, other = streams2, streams1
-        aw_act, other_act = act2, act1
+        aw_act = act2
     else:
-        # Can't determine, use first as base
         aw, other = streams1, streams2
         aw_act = act1
     
@@ -155,10 +177,9 @@ for act1, act2 in pairs:
     
     gpx = merge_gpx(aw, other, base_time)
     if gpx and upload_gpx(gpx):
-        print(f"  Merged and uploaded!")
-    else:
-        print(f"  Failed")
+        merged_count += 1
+        print(f"  Merged: {act1['id']} + {act2['id']}")
     
     time.sleep(0.5)
 
-print("Done!")
+print(f"=== Done! Merged {merged_count} workouts ===")
