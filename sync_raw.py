@@ -182,9 +182,12 @@ for act in cycling:
     if not gpx:
         continue
     
-    if upload_gpx(gpx):
+    success = upload_gpx(gpx)
+    if success:
         synced += 1
         print(f"  Synced: {act['id']} - {act.get('name')[:40]}")
+    else:
+        print(f"  Upload failed: {act['id']}")
     
     time.sleep(0.3)
 
