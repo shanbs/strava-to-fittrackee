@@ -194,18 +194,27 @@ def dedup_workouts(headers, after_ts, strava_to_ft):
         print("  No workouts found in range")
         return
 
-    groups = defaultdict(list)
-    for w in sorted(workouts, key=lambda x: x["_dt"]):
-        key = w["_dt"].strftime("%Y-%m-%d %H:%M")
-        groups[key].append(w)
-
-    dup_groups = {k: v for k, v in groups.items() if len(v) > 1}
-    if not dup_groups:
+    sorted_w = sorted(workouts, key=lambda x: x["_dt"])
+    groups = []
+    current = []
+    for w in sorted_w:
+        if not current:
+            current = [w]
+        elif (w["_dt"] - current[0]["_dt"]).total_seconds() < 180:
+            current.append(w)
+        else:
+            if len(current) > 1:
+                groups.append(current)
+            current = [w]
+    if len(current) > 1:
+        groups.append(current)
+    if not groups:
         print("  No duplicates found")
         return
 
     total_deleted = 0
-    for key, ws in sorted(dup_groups.items()):
+    for ws in groups:
+        key = ws[0]["_dt"].strftime("%Y-%m-%d %H:%M")
         scored = [(workout_score(w), w) for w in ws]
         scored.sort(key=lambda x: -x[0])
         best = scored[0][1]
