@@ -71,12 +71,26 @@ def get_strava_activities(from_date=None, to_date=None):
     
     return activities
 
-def get_streams(activity_id):
-    r = requests.get(f"https://www.strava.com/api/v3/activities/{activity_id}/streams", 
+def get_streams(activity_id, retries=3, delay=2):
+    for attempt in range(retries):
+        try:
+            r = requests.get(f"https://www.strava.com/api/v3/activities/{activity_id}/streams", 
                       headers=strava_headers, 
-                      params={"keys": "latlng,time,heartrate,cadence,velocity_smooth", "key_by_type": "true"})
-    if r.status_code != 200: return None
-    return r.json()
+                      params={"keys": "latlng,time,heartrate,cadence,velocity_smooth", "key_by_type": "true"},
+                      timeout=30)
+            if r.status_code == 200:
+                return r.json()
+            elif r.status_code == 429:
+                print(f"  Rate limited, waiting {delay}s...")
+                time.sleep(delay)
+                delay *= 2
+            else:
+                return None
+        except Exception as e:
+            print(f"  Error: {e}, retrying...")
+            time.sleep(delay)
+            delay *= 2
+    return None
 
 def create_gpx(streams, activity_date, activity_name):
     latlng = streams.get('latlng', {}).get('data', [])
