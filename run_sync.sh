@@ -9,7 +9,7 @@ LAST_MERGE_FILE="/app/.last_merge_date"
 
 # Get last sync date from FitTrackee (incremental sync)
 echo "=== Getting last sync time ==="
-python3 -c "
+LAST_WORKOUT_DATE=$(python3 -c "
 import requests, json
 ft_token = json.loads(open('/app/.fittrackee.tokens.json').read())['access_token']
 r = requests.get('http://127.0.0.1:5001/api/workouts?per_page=1&order=desc', headers={'Authorization': f'Bearer {ft_token}'})
@@ -18,24 +18,23 @@ if r.status_code == 200 and r.json()['data']['workouts']:
     from email.utils import parsedate_to_datetime
     d = parsedate_to_datetime(dt).strftime('%Y-%m-%d')
     print(d)
-    open('$LAST_SYNC_FILE', 'w').write(d)
-"
+")
+echo "Last workout date: $LAST_WORKOUT_DATE"
 
 # Get last merge date
 if [ -f "$LAST_MERGE_FILE" ]; then
     LAST_MERGE_DATE=$(cat $LAST_MERGE_FILE)
     echo "Last merge: $LAST_MERGE_DATE"
-    MERGE_FROM="--from $LAST_MERGE_DATE"
 else
-    # Default to 90 days
-    MERGE_FROM="--from $(date -d '90 days ago' +%Y-%m-%d)"
+    LAST_MERGE_DATE=$(date -d '90 days ago' +%Y-%m-%d)
+    echo "Default merge: $LAST_MERGE_DATE"
 fi
 
 echo "=== Starting Strava sync (incremental) ==="
-python3 sync_raw.py
+python3 sync_raw.py --from "$LAST_WORKOUT_DATE"
 
-echo "=== Merging workouts (from $MERGE_FROM) ==="
-python3 merge_aw.py $MERGE_FROM --to $(date +%Y-%m-%d)
+echo "=== Merging workouts (from $LAST_MERGE_DATE) ==="
+python3 merge_aw.py --from "$LAST_MERGE_DATE" --to $(date +%Y-%m-%d)
 
 # Save last merge date
 date +%Y-%m-%d > $LAST_MERGE_FILE
