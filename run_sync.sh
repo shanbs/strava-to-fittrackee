@@ -1,13 +1,8 @@
 #!/bin/bash
 # Wrapper script to sync from Strava, merge workouts, and clean bad data
 
-echo "=== Incremental sync (s2f) ==="
+echo "=== Starting Strava sync ==="
 cd /app
-rm -f strava_to_fittrackee/s2f.pid
-export OAUTHLIB_INSECURE_TRANSPORT=1
-python3 -m strava_to_fittrackee.s2f --sync -v 2 2>&1 || echo "s2f sync failed"
-
-echo "=== Starting Strava sync (raw) ==="
 python3 sync_raw.py
 
 echo "=== Merging workouts ==="
