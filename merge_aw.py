@@ -125,6 +125,19 @@ def upload_gpx(gpx_content, sport_id=1):
     r = requests.post(f'{FITTRACKEE_URL}/api/workouts', headers=ft_headers, files=files, data=data)
     return r.status_code == 201
 
+def delete_workout(strava_id):
+    """Delete a workout from FitTrackee by Strava ID."""
+    # Find workout by Strava ID in notes
+    r = requests.get(f'{FITTRACKEE_URL}/api/workouts?per_page=100', headers=ft_headers)
+    if r.status_code != 200: return False
+    for w in r.json()['data']['workouts']:
+        notes = w.get('notes', '')
+        if f'strava.com/activities/{strava_id}' in notes:
+            # Delete via API
+            del_r = requests.delete(f'{FITTRACKEE_URL}/api/workouts/{w["id"]}', headers=ft_headers)
+            return del_r.status_code == 200 or del_r.status_code == 204
+    return False
+
 # Main - get activities for date range
 print("=== Fetching Strava activities for merge ===")
 activities = get_strava_activities_by_date_range(FROM_DATE, TO_DATE)
@@ -179,6 +192,11 @@ for act1, act2 in pairs:
     if gpx and upload_gpx(gpx):
         merged_count += 1
         print(f"  Merged: {act1['id']} + {act2['id']}")
+        
+        # Delete original workouts after successful merge
+        delete_workout(act1['id'])
+        delete_workout(act2['id'])
+        print(f"    Deleted originals: {act1['id']}, {act2['id']}")
     
     time.sleep(0.5)
 

@@ -1,61 +1,44 @@
 #!/bin/bash
 # Wrapper script to sync from Strava, merge workouts, and clean bad data
 
-# Parse args: --sync-from YYYY-MM-DD --sync-to YYYY-MM-DD --merge-from YYYY-MM-DD --merge-to YYYY-MM-DD
-SYNC_FROM=""
-SYNC_TO=""
-MERGE_FROM=""
-MERGE_TO=""
-
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --sync-from)
-            SYNC_FROM="$2"
-            shift 2
-            ;;
-        --sync-to)
-            SYNC_TO="$2"
-            shift 2
-            ;;
-        --merge-from)
-            MERGE_FROM="$2"
-            shift 2
-            ;;
-        --merge-to)
-            MERGE_TO="$2"
-            shift 2
-            ;;
-        *)
-            shift
-            ;;
-    esac
-done
-
 cd /app
 
-# Build sync args
-SYNC_ARGS=""
-if [ -n "$SYNC_FROM" ]; then
-    SYNC_ARGS="--from $SYNC_FROM"
-    if [ -n "$SYNC_TO" ]; then
-        SYNC_ARGS="$SYNC_ARGS --to $SYNC_TO"
-    fi
+# File to store last sync/merge timestamps
+LAST_SYNC_FILE="/app/.last_sync_date"
+LAST_MERGE_FILE="/app/.last_merge_date"
+
+# Get last sync date from FitTrackee (incremental sync)
+echo "=== Getting last sync time ==="
+python3 -c "
+import requests, json
+ft_token = json.loads(open('/app/.fittrackee.tokens.json').read())['access_token']
+r = requests.get('http://127.0.0.1:5001/api/workouts?per_page=1&order=desc', headers={'Authorization': f'Bearer {ft_token}'})
+if r.status_code == 200 and r.json()['data']['workouts']:
+    dt = r.json()['data']['workouts'][0]['workout_date']
+    from email.utils import parsedate_to_datetime
+    d = parsedate_to_datetime(dt).strftime('%Y-%m-%d')
+    print(d)
+    open('$LAST_SYNC_FILE', 'w').write(d)
+"
+
+# Get last merge date
+if [ -f "$LAST_MERGE_FILE" ]; then
+    LAST_MERGE_DATE=$(cat $LAST_MERGE_FILE)
+    echo "Last merge: $LAST_MERGE_DATE"
+    MERGE_FROM="--from $LAST_MERGE_DATE"
+else
+    # Default to 90 days
+    MERGE_FROM="--from $(date -d '90 days ago' +%Y-%m-%d)"
 fi
 
-# Build merge args
-MERGE_ARGS=""
-if [ -n "$MERGE_FROM" ]; then
-    MERGE_ARGS="--from $MERGE_FROM"
-    if [ -n "$MERGE_TO" ]; then
-        MERGE_ARGS="$MERGE_ARGS --to $MERGE_TO"
-    fi
-fi
+echo "=== Starting Strava sync (incremental) ==="
+python3 sync_raw.py
 
-echo "=== Starting Strava sync ==="
-python3 sync_raw.py $SYNC_ARGS
+echo "=== Merging workouts (from $MERGE_FROM) ==="
+python3 merge_aw.py $MERGE_FROM --to $(date +%Y-%m-%d)
 
-echo "=== Merging workouts ==="
-python3 merge_aw.py $MERGE_ARGS
+# Save last merge date
+date +%Y-%m-%d > $LAST_MERGE_FILE
 
 echo "=== Cleaning bad speed points ==="
 python3 -c "
