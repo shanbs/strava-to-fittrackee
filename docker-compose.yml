@@ -4,12 +4,11 @@ services:
     image: shanbs/strava-to-fittrackee:test
     network_mode: host
     volumes:
-      - /opt/fittrackee/strava-to-fittrackee-secrets/_data:/app/data:ro
+      - /opt/fittrackee/strava-to-fittrackee-secrets/_data/.strava.tokens.json:/app/.strava.tokens.json:ro
+      - /opt/fittrackee/strava-to-fittrackee-secrets/_data/.fittrackee.tokens.json:/app/.fittrackee.tokens.json:ro
+      - /opt/fittrackee/strava-to-fittrackee-secrets/_data/.env:/app/.env:ro
     restart: unless-stopped
-    command: >
-      bash -c "cp /app/data/.strava.tokens.json /app/;
-               cp /app/data/.fittrackee.tokens.json /app/;
-               while true; do bash run_sync.sh; sleep 3600; done"
+    command: ["bash", "run_sync.sh"]
     environment:
       - FITTRACKEE_HOST=127.0.0.1
       - FITTRACKEE_PORT=5001
