@@ -170,6 +170,35 @@ def upload_gpx(gpx_content, sport_id, headers):
     return None
 
 
+def find_existing_ft_workout(strava_start_date, sport_id, headers):
+    dt = datetime.fromisoformat(strava_start_date.replace("Z", "+00:00"))
+    date_str = dt.strftime("%Y-%m-%d")
+    r = requests.get(
+        f"{FT_URL}/api/workouts",
+        headers=headers,
+        params={"per_page": 50, "page": 1, "from": date_str, "to": date_str},
+    )
+    if r.status_code != 200:
+        return None
+    workouts = r.json().get("data", {}).get("workouts", [])
+    act_ts = dt.timestamp()
+    best = None
+    best_delta = 120
+    for w in workouts:
+        wd = w.get("workout_date")
+        if not wd:
+            continue
+        try:
+            w_ts = datetime.strptime(wd, "%a, %d %b %Y %H:%M:%S %Z").timestamp()
+        except ValueError:
+            continue
+        delta = abs(w_ts - act_ts)
+        if delta < best_delta:
+            best_delta = delta
+            best = w["id"]
+    return best
+
+
 def fetch_strava_activities(after_ts, headers):
     activities = []
     page = 1
@@ -247,7 +276,12 @@ def main():
             print(f"    Uploaded (FT id={ft_id})")
             strava_to_ft[str(act_id)] = ft_id
         else:
-            print("    Upload failed")
+            existing = find_existing_ft_workout(act["start_date"], sport_id, ft_headers)
+            if existing:
+                print(f"    Found existing FT workout {existing}")
+                strava_to_ft[str(act_id)] = existing
+            else:
+                print("    Upload failed and no existing workout found")
         time.sleep(0.5)
 
     if strava_to_ft:
