@@ -5,7 +5,7 @@ import os
 import json
 import time
 from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
+
 import requests
 
 FT_HOST = os.environ.get("FITTRACKEE_HOST", "fittrackee")
@@ -19,6 +19,8 @@ FITTRACKEE_CLIENT_SECRET = os.environ.get("FITTRACKEE_CLIENT_SECRET", "PVbysRv51
 
 STRAVA_TOKEN_PATH = "/app/.strava.tokens.json"
 FITTRACKEE_TOKEN_PATH = "/app/.fittrackee.tokens.json"
+LAST_MERGE_FILE = "/app/data/.last_merge"
+STRAVA_TO_FT_MAP = "/app/data/.strava_to_ft.json"
 
 
 def load_token(path):
@@ -143,17 +145,12 @@ def upload_gpx(gpx_content, sport_id, headers):
     files = {"file": ("activity.gpx", gpx_content, "application/gpx+xml")}
     data = {"data": json.dumps({"sport_id": sport_id})}
     r = requests.post(f"{FT_URL}/api/workouts", headers=headers, files=files, data=data)
-    return r.status_code == 201
-
-
-def get_latest_workout_date(headers):
-    r = requests.get(f"{FT_URL}/api/workouts?per_page=1&order=desc", headers=headers)
-    if r.status_code != 200:
-        return None
-    data = r.json().get("data", {}).get("workouts", [])
-    if not data:
-        return None
-    return data[0]["workout_date"]
+    if r.status_code == 201:
+        try:
+            return r.json().get("data", {}).get("id")
+        except (ValueError, KeyError, AttributeError):
+            return None
+    return None
 
 
 def fetch_strava_activities(after_ts, headers):
@@ -189,17 +186,21 @@ def main():
         return
     ft_headers = {"Authorization": f"Bearer {ft_token['access_token']}"}
 
-    last_date = get_latest_workout_date(ft_headers)
-    if last_date:
-        last_dt = parsedate_to_datetime(last_date)
-        after_ts = last_dt.timestamp()
-        print(f"Last workout: {last_date}")
-    else:
-        after_ts = 0
-        print("No existing workouts, syncing all")
+    try:
+        with open(LAST_MERGE_FILE) as f:
+            last_merge = f.read().strip()
+        if last_merge:
+            after_ts = datetime.fromisoformat(last_merge).timestamp()
+        else:
+            after_ts = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
+    except FileNotFoundError:
+        after_ts = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
+    print(f"Syncing Strava activities after {datetime.fromtimestamp(after_ts).strftime('%Y-%m-%d %H:%M')}")
 
     activities = fetch_strava_activities(after_ts, strava_headers)
     print(f"Found {len(activities)} new activities")
+
+    strava_to_ft = {}
 
     for act in activities:
         act_id = act["id"]
@@ -218,11 +219,18 @@ def main():
             print("    GPX generation failed")
             continue
 
-        if upload_gpx(gpx, sport_id, ft_headers):
-            print("    Uploaded")
+        ft_id = upload_gpx(gpx, sport_id, ft_headers)
+        if ft_id:
+            print(f"    Uploaded (FT id={ft_id})")
+            strava_to_ft[str(act_id)] = ft_id
         else:
             print("    Upload failed")
         time.sleep(0.5)
+
+    if strava_to_ft:
+        with open(STRAVA_TO_FT_MAP, "w") as f:
+            json.dump(strava_to_ft, f, indent=2)
+        print(f"Saved mapping for {len(strava_to_ft)} activities to {STRAVA_TO_FT_MAP}")
 
     print("Done!")
 

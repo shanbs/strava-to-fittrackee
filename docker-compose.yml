@@ -1,12 +1,13 @@
 version: '3.8'
 services:
   strava-sync:
-    image: shanbs/strava-to-fittrackee:latest
+    image: bshan/strava-to-fittrackee:latest
     network_mode: host
     volumes:
       - /opt/fittrackee/strava-to-fittrackee-secrets/_data/.strava.tokens.json:/app/.strava.tokens.json:ro
       - /opt/fittrackee/strava-to-fittrackee-secrets/_data/.fittrackee.tokens.json:/app/.fittrackee.tokens.json:ro
       - /opt/fittrackee/strava-to-fittrackee-secrets/_data/.env:/app/.env:ro
+      - /opt/fittrackee/strava-sync-data:/app/data
     restart: unless-stopped
     command: ["bash", "run_sync.sh"]
     environment:

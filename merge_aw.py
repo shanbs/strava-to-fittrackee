@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Find cycling activity pairs (same ride, two devices), merge GPS+HR+cadence, upload."""
+"""Find cycling activity pairs (same ride, two devices), merge GPS+HR+cadence, upload, dedup."""
 
 import os
 import json
 import time
 from datetime import datetime, timedelta, timezone
+from collections import defaultdict
+from email.utils import parsedate_to_datetime
 import requests
 
 FT_HOST = os.environ.get("FITTRACKEE_HOST", "fittrackee")
@@ -18,7 +20,8 @@ FITTRACKEE_CLIENT_SECRET = os.environ.get("FITTRACKEE_CLIENT_SECRET", "PVbysRv51
 
 STRAVA_TOKEN_PATH = "/app/.strava.tokens.json"
 FITTRACKEE_TOKEN_PATH = "/app/.fittrackee.tokens.json"
-LAST_MERGE_FILE = "/app/.last_merge"
+LAST_MERGE_FILE = "/app/data/.last_merge"
+STRAVA_TO_FT_MAP = "/app/data/.strava_to_ft.json"
 
 
 def load_token(path):
@@ -138,6 +141,91 @@ def upload_gpx(gpx_content, headers):
     return r.status_code == 201
 
 
+def delete_workout(ft_id, headers):
+    r = requests.delete(f"{FT_URL}/api/workouts/{ft_id}", headers=headers)
+    if r.status_code == 204:
+        return True
+    elif r.status_code == 404:
+        print(f"    FT workout {ft_id} not found (already deleted)")
+        return True
+    else:
+        print(f"    Failed to delete FT workout {ft_id}: {r.status_code}")
+        return False
+
+
+def fetch_ft_workouts(headers, after_ts):
+    workouts = []
+    page = 1
+    while True:
+        r = requests.get(
+            f"{FT_URL}/api/workouts",
+            headers=headers,
+            params={"page": page, "limit": 50},
+        )
+        if r.status_code != 200:
+            print(f"  FT API error: {r.status_code}")
+            break
+        data = r.json().get("data", {}).get("workouts", [])
+        if not data:
+            break
+        for w in data:
+            wd = parsedate_to_datetime(w["workout_date"])
+            if wd.timestamp() >= after_ts:
+                w["_dt"] = wd
+                workouts.append(w)
+        page += 1
+    return workouts
+
+
+def workout_score(w):
+    score = 0
+    title = w.get("title", "")
+    if "Merged" in title:
+        score += 100
+    if w.get("notes"):
+        score += 5
+    return score
+
+
+def dedup_workouts(headers, after_ts, strava_to_ft):
+    print("\n=== Checking for duplicate workouts ===")
+    workouts = fetch_ft_workouts(headers, after_ts)
+    if not workouts:
+        print("  No workouts found in range")
+        return
+
+    groups = defaultdict(list)
+    for w in sorted(workouts, key=lambda x: x["_dt"]):
+        key = w["_dt"].strftime("%Y-%m-%d %H:%M")
+        groups[key].append(w)
+
+    dup_groups = {k: v for k, v in groups.items() if len(v) > 1}
+    if not dup_groups:
+        print("  No duplicates found")
+        return
+
+    total_deleted = 0
+    for key, ws in sorted(dup_groups.items()):
+        scored = [(workout_score(w), w) for w in ws]
+        scored.sort(key=lambda x: -x[0])
+        best = scored[0][1]
+        rest = [w for _, w in scored[1:]]
+
+        print(f"  {key}: {len(ws)} workouts -> keep {best['id']} ({best.get('title','')[:40]}), delete {len(rest)}")
+        for w in rest:
+            wid = w["id"]
+            if delete_workout(wid, headers):
+                total_deleted += 1
+                sid = next((s for s, fid in strava_to_ft.items() if fid == wid), None)
+                if sid:
+                    strava_to_ft.pop(sid, None)
+
+    if total_deleted:
+        with open(STRAVA_TO_FT_MAP, "w") as f:
+            json.dump(strava_to_ft, f, indent=2)
+    print(f"  Deleted {total_deleted} duplicate(s)")
+
+
 def fetch_strava_activities(after_ts, headers):
     activities = []
     page = 1
@@ -204,6 +292,13 @@ def main():
 
     print(f"Found {len(pairs)} pairs to merge")
 
+    strava_to_ft = {}
+    try:
+        with open(STRAVA_TO_FT_MAP) as f:
+            strava_to_ft = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        print("No mapping file found, originals will not be deleted")
+
     for act1, act2 in pairs:
         streams1 = get_streams(act1["id"], strava_headers)
         streams2 = get_streams(act2["id"], strava_headers)
@@ -233,9 +328,23 @@ def main():
         gpx = merge_gpx(aw, other, base_time)
         if gpx and upload_gpx(gpx, ft_headers):
             print(f"  Merged and uploaded!")
+
+            ft_id1 = strava_to_ft.get(str(act1["id"]))
+            ft_id2 = strava_to_ft.get(str(act2["id"]))
+            for label, strava_id, ft_id in [("act1", act1["id"], ft_id1), ("act2", act2["id"], ft_id2)]:
+                if ft_id:
+                    print(f"    Deleting original FT workout {ft_id} (Strava {strava_id})")
+                    if delete_workout(ft_id, ft_headers):
+                        strava_to_ft.pop(str(strava_id), None)
+                else:
+                    print(f"    No FT mapping for Strava {strava_id}, cannot delete original")
+            with open(STRAVA_TO_FT_MAP, "w") as f:
+                json.dump(strava_to_ft, f, indent=2)
         else:
             print(f"  Failed")
         time.sleep(0.5)
+
+    dedup_workouts(ft_headers, after_ts, strava_to_ft)
 
     with open(LAST_MERGE_FILE, "w") as f:
         f.write(datetime.now(timezone.utc).isoformat())

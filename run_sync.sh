@@ -1,6 +1,8 @@
 #!/bin/bash
 # Wrapper script to sync from Strava, merge workouts, and clean bad data
 
+mkdir -p /app/data
+
 echo "=== Starting Strava sync ==="
 cd /app
 python3 sync_raw.py
