@@ -133,7 +133,7 @@ def upload_gpx(gpx_content, sport_id=1, strava_id=None):
     files = {'file': ('activity.gpx', gpx_content, 'application/gpx+xml')}
     data = {"sport_id": sport_id}
     if strava_id:
-        data["description"] = f"strava.com/activities/{strava_id}"
+        data["notes"] = f"strava.com/activities/{strava_id}"
     r = requests.post(f'{FITTRACKEE_URL}/api/workouts', headers=ft_headers, files=files, data={"data": json.dumps(data)})
     print(f"    Upload status: {r.status_code}")
     if r.status_code != 201:
