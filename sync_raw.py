@@ -129,10 +129,12 @@ def create_gpx(streams, activity_date, activity_name):
     lines.append('  </trkseg></trk></gpx>')
     return '\n'.join(lines)
 
-def upload_gpx(gpx_content, sport_id=1):
+def upload_gpx(gpx_content, sport_id=1, strava_id=None):
     files = {'file': ('activity.gpx', gpx_content, 'application/gpx+xml')}
-    data = {'data': json.dumps({"sport_id": sport_id})}
-    r = requests.post(f'{FITTRACKEE_URL}/api/workouts', headers=ft_headers, files=files, data=data)
+    data = {"sport_id": sport_id}
+    if strava_id:
+        data["description"] = f"strava.com/activities/{strava_id}"
+    r = requests.post(f'{FITTRACKEE_URL}/api/workouts', headers=ft_headers, files=files, data={"data": json.dumps(data)})
     print(f"    Upload status: {r.status_code}")
     if r.status_code != 201:
         print(f"    Response: {r.text[:200]}")
@@ -185,7 +187,7 @@ for act in cycling:
     if not gpx:
         continue
     
-    success = upload_gpx(gpx)
+    success = upload_gpx(gpx, strava_id=act['id'])
     if success:
         synced += 1
         print(f"  Synced: {act['id']} - {act.get('name')[:40]}")
