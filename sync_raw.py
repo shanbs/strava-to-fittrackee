@@ -1,96 +1,30 @@
 #!/usr/bin/env python3
-"""Sync from Strava - accepts date range."""
+"""Sync WITHOUT GPS filter - use raw Strava data."""
 
+import os
 import requests
 import json
 import time
-import os
-import sys
 from datetime import datetime, timedelta
 
-STRAVA_TOKEN = open("/app/.strava.tokens.json").read()
-STRAVA_TOKEN = json.loads(STRAVA_TOKEN)["access_token"]
-FT_TOKEN = open("/app/.fittrackee.tokens.json").read()
-FT_TOKEN = json.loads(FT_TOKEN)["access_token"]
+STRAVA_TOKEN = "db758125923c7fc46c2d3a56c10929ec4d5464ef"
+FT_TOKEN = "FRJY7et0MNi1f6oT6WXdXw1AG413CRFa31R8y60Ydu"
 
 strava_headers = {"Authorization": f"Bearer {STRAVA_TOKEN}"}
 ft_headers = {"Authorization": f"Bearer {FT_TOKEN}"}
 
-FITTRACKEE_HOST = os.environ.get("FITTRACKEE_HOST", "fittrackee_app")
-FITTRACKEE_PORT = os.environ.get("FITTRACKEE_PORT", "5001")
-FITTRACKEE_URL = f"http://{FITTRACKEE_HOST}:{FITTRACKEE_PORT}"
+FT_HOST = os.environ.get("FITTRACKEE_HOST", "fittrackee")
+FT_PORT = os.environ.get("FITTRACKEE_PORT", "5000")
+FT_URL = f"http://{FT_HOST}:{FT_PORT}"
 
-# Parse command line args: --from YYYY-MM-DD --to YYYY-MM-DD
-FROM_DATE = None
-TO_DATE = None
-args = sys.argv[1:]
-for i, arg in enumerate(args):
-    if arg == '--from' and i+1 < len(args):
-        FROM_DATE = args[i+1]
-    if arg == '--to' and i+1 < len(args):
-        TO_DATE = args[i+1]
+TARGET_IDS = [17675801433, 17671394514]
 
-if FROM_DATE:
-    print(f"Syncing from {FROM_DATE} to {TO_DATE or 'now'}")
-else:
-    print("No date range specified, doing incremental sync...")
-
-def get_strava_activities(from_date=None, to_date=None):
-    """Get Strava activities within date range."""
-    activities = []
-    page = 1
-    
-    # Build date filter
-    after_ts = None
-    before_ts = None
-    
-    if from_date:
-        after_ts = int(datetime.strptime(from_date, "%Y-%m-%d").timestamp())
-    if to_date:
-        before_ts = int((datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)).timestamp())
-    
-    while True:
-        params = {"per_page": 100, "page": page}
-        if after_ts:
-            params['after'] = after_ts
-        if before_ts:
-            params['before'] = before_ts
-        
-        r = requests.get("https://www.strava.com/api/v3/athlete/activities", 
-                         headers=strava_headers, params=params)
-        if r.status_code != 200:
-            print(f"Error fetching Strava activities: {r.status_code}")
-            break
-        data = r.json()
-        if not data:
-            break
-        activities.extend(data)
-        page += 1
-        if page > 20:  # Safety limit
-            break
-    
-    return activities
-
-def get_streams(activity_id, retries=3, delay=2):
-    for attempt in range(retries):
-        try:
-            r = requests.get(f"https://www.strava.com/api/v3/activities/{activity_id}/streams", 
+def get_streams(activity_id):
+    r = requests.get(f"https://www.strava.com/api/v3/activities/{activity_id}/streams", 
                       headers=strava_headers, 
-                      params={"keys": "latlng,time,heartrate,cadence,velocity_smooth", "key_by_type": "true"},
-                      timeout=30)
-            if r.status_code == 200:
-                return r.json()
-            elif r.status_code == 429:
-                print(f"  Rate limited, waiting {delay}s...")
-                time.sleep(delay)
-                delay *= 2
-            else:
-                return None
-        except Exception as e:
-            print(f"  Error: {e}, retrying...")
-            time.sleep(delay)
-            delay *= 2
-    return None
+                      params={"keys": "latlng,time,heartrate,cadence,velocity_smooth", "key_by_type": "true"})
+    if r.status_code != 200: return None
+    return r.json()
 
 def create_gpx(streams, activity_date, activity_name):
     latlng = streams.get('latlng', {}).get('data', [])
@@ -101,6 +35,7 @@ def create_gpx(streams, activity_date, activity_name):
     
     if not latlng: return None
     
+    # NO GPS FILTER - use raw data
     lines = ['<?xml version="1.0" encoding="UTF-8"?>', 
              '<gpx version="1.1" creator="sync" xmlns="http://www.topografix.com/GPX/1/1" xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">',
              f'  <trk><name>{activity_name}</name><trkseg>']
@@ -129,71 +64,25 @@ def create_gpx(streams, activity_date, activity_name):
     lines.append('  </trkseg></trk></gpx>')
     return '\n'.join(lines)
 
-def upload_gpx(gpx_content, sport_id=1, strava_id=None):
+def upload_gpx(gpx_content, sport_id=1):
     files = {'file': ('activity.gpx', gpx_content, 'application/gpx+xml')}
-    data = {"sport_id": sport_id}
-    if strava_id:
-        data["notes"] = f"strava.com/activities/{strava_id}"
-    r = requests.post(f'{FITTRACKEE_URL}/api/workouts', headers=ft_headers, files=files, data={"data": json.dumps(data)})
-    print(f"    Upload status: {r.status_code}")
-    if r.status_code != 201:
-        print(f"    Response: {r.text[:200]}")
+    data = {'data': json.dumps({"sport_id": sport_id})}
+    r = requests.post(f'{FT_URL}/api/workouts', headers=ft_headers, files=files, data=data)
     return r.status_code == 201
 
-# Main
-print("=== Fetching Strava activities ===")
-activities = get_strava_activities(FROM_DATE, TO_DATE)
-print(f"Found {len(activities)} activities")
-
-# Get existing strava IDs from FitTrackee to avoid duplicates
-existing_ids = set()
-page = 1
-while True:
-    r = requests.get(f'{FITTRACKEE_URL}/api/workouts?per_page=100&page={page}', headers=ft_headers)
-    if r.status_code != 200:
-        break
-    ws = r.json()['data']['workouts']
-    if not ws: break
-    for w in ws:
-        notes = w.get('notes', '')
-        if 'strava.com/activities/' in notes:
-            sid = notes.split('strava.com/activities/')[1].split()[0]
-            existing_ids.add(int(sid))
-    page += 1
-    if page > 10: break
-
-print(f"Existing workouts: {len(existing_ids)}")
-
-# Only sync cycling activities
-cycling = [a for a in activities if a.get('type') in ['Ride', 'VirtualRide']]
-print(f"Cycling activities: {len(cycling)}")
-
-synced = 0
-for act in cycling:
-    if act['id'] in existing_ids:
-        print(f"  Skipping existing: {act['id']}")
-        continue
+for act_id in TARGET_IDS:
+    r = requests.get(f"https://www.strava.com/api/v3/activities/{act_id}", headers=strava_headers)
+    act = r.json()
+    print(f"Syncing {act_id}: {act.get('name')}")
     
-    streams = get_streams(act['id'])
-    if not streams:
-        print(f"  No streams: {act['id']}")
+    streams = get_streams(act_id)
+    if not streams or not streams.get('latlng'):
+        print(f"  No GPS")
         continue
-    if not streams.get('latlng'):
-        print(f"  No latlng: {act['id']}")
-        continue
-    print(f"  Got streams: {len(streams.get('latlng',{}).get('data',[]))} pts")
     
     gpx = create_gpx(streams, act['start_date'], act.get('name', 'Ride'))
-    if not gpx:
-        continue
-    
-    success = upload_gpx(gpx, strava_id=act['id'])
-    if success:
-        synced += 1
-        print(f"  Synced: {act['id']} - {act.get('name')[:40]}")
-    else:
-        print(f"  Upload failed: {act['id']}")
-    
-    time.sleep(0.3)
+    if upload_gpx(gpx):
+        print(f"  Done!")
+    time.sleep(0.5)
 
-print(f"=== Done! Synced {synced} new workouts ===")
+print("Done!")
