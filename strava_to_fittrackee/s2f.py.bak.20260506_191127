@@ -25,7 +25,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import gpxpy
-import xml.etree.ElementTree as ET
 import pytz
 import urllib3
 from dotenv import load_dotenv
@@ -182,14 +181,15 @@ def custom_raise_for_status(r: Response, log_api_usage: bool = True):
     (if requested), raises a custom error if the request is over the API
     limits, and then calls the requests module's ``raise_for_status()``
     """
-    fifteen_usage, daily_usage = dict(r.headers)["x-ratelimit-usage"].split(",")
-    fifteen_limit, daily_limit = dict(r.headers)["x-ratelimit-limit"].split(",")
-    if log_api_usage:
-        logger.debug(
-            "Current API usage -- 15 minute:"
-            f" {fifteen_usage}/{fifteen_limit} -- daily:"
-            f" {daily_usage}/{daily_limit}"
-        )
+    if "x-ratelimit-usage" in r.headers and "x-ratelimit-limit" in r.headers:
+        fifteen_usage, daily_usage = dict(r.headers)["x-ratelimit-usage"].split(",")
+        fifteen_limit, daily_limit = dict(r.headers)["x-ratelimit-limit"].split(",")
+        if log_api_usage:
+            logger.debug(
+                "Current API usage -- 15 minute:"
+                f" {fifteen_usage}/{fifteen_limit} -- daily:"
+                f" {daily_usage}/{daily_limit}"
+            )
     if r.status_code == 429:
         raise TooManyRequestsError("429 Too Many Requests")
     r.raise_for_status()
@@ -525,30 +525,6 @@ class StravaConnector:
         description = activity["description"]
         description = "" if description is None else description
         
-        # Fetch heartrate if available
-        heartrate = None
-        try:
-            r = self.client.get(
-                self.base_url + f"/activities/{activity_id}/streams",
-                params={"keys": ["heartrate"]},
-            )
-            if r.status_code == 200:
-                heartrate = self.filter_response_by_key(r.json(), 'heartrate', [None])
-        except Exception as e:
-            logger.debug(f"No heartrate data for activity {activity_id}: {e}")
-
-        # Fetch cadence if available
-        cadence = None
-        try:
-            r = self.client.get(
-                self.base_url + f"/activities/{activity_id}/streams",
-                params={"keys": ["cadence"]},
-            )
-            if r.status_code == 200:
-                cadence = self.filter_response_by_key(r.json(), 'cadence', [None])
-        except Exception as e:
-            logger.debug(f"No cadence data for activity {activity_id}: {e}")
-
         return Activity(
             activity_dict=activity,
             latlng=latlng,
@@ -557,9 +533,7 @@ class StravaConnector:
             velocity=velocity,
             distance=distance,
             gear=gear,
-            description=description,
-            heartrate=heartrate,
-            cadence=cadence,
+            description=description
         )
 
 
@@ -574,8 +548,6 @@ class Activity:
         distance,
         gear,
         description,
-        heartrate=None,
-        cadence=None,
     ):
         self.title = activity_dict["name"]
         self.activity_dict = activity_dict
@@ -593,8 +565,6 @@ class Activity:
         self.gear = gear
         self.gear_note = self.get_gear_note()
         self.description = description
-        self.heartrate = heartrate
-        self.cadence = cadence
 
     def as_dict(self) -> Dict:
         return {
@@ -622,9 +592,6 @@ class Activity:
         """
         gpx = gpxpy.gpx.GPX()
 
-        # Add gpxtpx namespace for TrackPointExtension
-        gpx.namespaces["gpxtpx"] = "http://www.garmin.com/xmlschemas/TrackPointExtension/v1"
-
         # Create first track in our GPX:
         gpx_track = gpxpy.gpx.GPXTrack(
             name=self.title, description=self.type
@@ -638,65 +605,19 @@ class Activity:
         gpx_segment = gpxpy.gpx.GPXTrackSegment()
         gpx_track.segments.append(gpx_segment)
 
-        # Check if we have heartrate or cadence data
-        has_hr = self.heartrate and len(self.heartrate) > 0
-        has_cad = self.cadence and len(self.cadence) > 0
-
         # Create points:
-        for i, (time, lat, long, alt, vel) in enumerate(zip(
+        for time, lat, long, alt, vel in zip(
             self.time, self.lat, self.long, self.altitude, self.velocity
-        )):
-            pt = gpxpy.gpx.GPXTrackPoint(lat, long, elevation=alt, time=time, speed=vel)
-
-            # Add extensions if we have heartrate or cadence
-            if has_hr or has_cad:
-                hr_val = self.heartrate[i] if has_hr and i < len(self.heartrate) else None
-                cad_val = self.cadence[i] if has_cad and i < len(self.cadence) else None
-
-                if hr_val or cad_val:
-                    # Create extension dict that gpxpy will serialize
-                    ext_dict = {}
-                    tp_ext = {}
-
-                    if hr_val and hr_val > 0:
-                        tp_ext['hr'] = str(int(hr_val))
-                    if cad_val and cad_val > 0:
-                        tp_ext['cad'] = str(int(cad_val))
-
-                    if tp_ext:
-                        ext_dict['TrackPointExtension'] = tp_ext
-                        pt.extensions = ext_dict
-
-            gpx_segment.points.append(pt)
+        ):
+            gpx_segment.points.append(
+                gpxpy.gpx.GPXTrackPoint(lat, long, elevation=alt, time=time, speed=vel)
+            )
 
         return gpx
 
-    def _fix_gpxtpx_namespace(self, gpx_xml: str) -> str:
-        """Add gpxtpx namespace prefix to extensions in GPX XML."""
-        import re
-        # Add namespace to root element
-        gpx_xml = gpx_xml.replace(
-            '<gpx',
-            '<gpx xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1"'
-        )
-        # Replace TrackPointExtension elements with prefixed version
-        def add_prefix(match):
-            inner = match.group(1)
-            inner = re.sub(r'<TrackPointExtension>', '<gpxtpx:TrackPointExtension>', inner)
-            inner = re.sub(r'</TrackPointExtension>', '</gpxtpx:TrackPointExtension>', inner)
-            inner = re.sub(r'<hr>', '<gpxtpx:hr>', inner)
-            inner = re.sub(r'</hr>', '</gpxtpx:hr>', inner)
-            inner = re.sub(r'<cad>', '<gpxtpx:cad>', inner)
-            inner = re.sub(r'</cad>', '</gpxtpx:cad>', inner)
-            return f'<extensions>{inner}</extensions>'
-        gpx_xml = re.sub(r'<extensions>(.*?)</extensions>', add_prefix, gpx_xml, flags=re.DOTALL)
-        return gpx_xml
-
     def as_xml(self):
         """Export this activity's GPX (XML) representation as a string."""
-        gpx_xml = self.as_gpx().to_xml()
-        # Fix namespace prefixes for FitTrackee compatibility
-        return self._fix_gpxtpx_namespace(gpx_xml)
+        return self.as_gpx().to_xml()
 
     def get_gear_note(self):
         """Get description of gear (if any) for the notes field."""
