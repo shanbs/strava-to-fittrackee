@@ -126,32 +126,26 @@ def upload_gpx(gpx_content, sport_id=1):
     return r.status_code == 201
 
 def delete_workout(strava_id):
-    """Delete a workout from FitTrackee by Strava ID."""
-    print(f"    Trying to delete strava_id {strava_id}...")
-    page = 1
-    while True:
-        r = requests.get(f'{FITTRACKEE_URL}/api/workouts?per_page=100&page={page}', headers=ft_headers)
-        if r.status_code != 200:
-            print(f"    Failed to get workouts: {r.status_code}")
-            return False
-        data = r.json().get('data', {})
-        workouts = data.get('workouts', [])
-        if not workouts:
-            break
-        pagination = data.get('pagination', {})
-        print(f"    Checking page {page} ({len(workouts)} workouts)...")
-        for w in workouts:
-            notes = w.get('notes', '') or ''
-            if f'strava.com/activities/{strava_id}' in notes:
-                print(f"    Found workout {w['id']}, deleting...")
-                del_r = requests.delete(f'{FITTRACKEE_URL}/api/workouts/{w["id"]}', headers=ft_headers)
-                print(f"    Delete status: {del_r.status_code}")
-                return del_r.status_code == 200 or del_r.status_code == 204
-        if not pagination.get('has_next'):
-            break
-        page += 1
-    print(f"    Not found!")
-    return False
+    """Delete a workout from FitTrackee by Strava ID in notes."""
+    print(f"    Trying to delete strava_id {strava_id} via DB...")
+    import os
+    db_host = os.environ.get("POSTGRES_HOST", "172.24.0.2")
+    import psycopg2
+    try:
+        conn = psycopg2.connect(host=db_host, user="fittrackee", password="mysecretpassword", database="fittrackee")
+        cur = conn.cursor()
+        cur.execute("DELETE FROM records WHERE workout_id IN (SELECT id FROM workouts WHERE notes LIKE %s)", (f'%strava.com/activities/{strava_id}%',))
+        cur.execute("DELETE FROM workout_segments WHERE workout_id IN (SELECT id FROM workouts WHERE notes LIKE %s)", (f'%strava.com/activities/{strava_id}%',))
+        cur.execute("DELETE FROM workouts WHERE notes LIKE %s", (f'%strava.com/activities/{strava_id}%',))
+        deleted = cur.rowcount
+        conn.commit()
+        cur.close()
+        conn.close()
+        print(f"    Deleted {deleted} workout(s) from DB")
+        return deleted > 0
+    except Exception as e:
+        print(f"    DB error: {e}")
+        return False
 
 # Main - get activities for date range
 print("=== Fetching Strava activities for merge ===")
