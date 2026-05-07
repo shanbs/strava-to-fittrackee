@@ -1,9 +1,57 @@
 # Strava-to-FitTrackee
 
-This is a little tool that will pull workouts from a [Strava](https://www.strava.com/)
-account and push them to a [FitTrackee](https://github.com/SamR1/FitTrackee/) instance.
-The tool was written to help automatically backup workout tracks from the commercial
-service onto a self-hosted instance for safe keeping.
+This is a tool that syncs workouts from [Strava](https://www.strava.com/) to a
+self-hosted [FitTrackee](https://github.com/SamR1/FitTrackee/) instance.
+
+> **This is a forked/customized version.** The original upstream is at
+> [jat255/strava-to-fittrackee](https://github.com/jat255/strava-to-fittrackee).
+
+## Docker Production Setup
+
+The stack runs via Docker Compose at `/opt/fittrackee/docker-compose.yaml`:
+
+| Service | Image | Port (host:container) |
+|---|---|---|
+| `fittrackee-db` | `imresamu/postgis:17-3.5-alpine` | — |
+| `fittrackee` | `fittrackee/fittrackee:v1.2.2` | `5001:5000` |
+| `strava-sync` | `shanbs/strava-to-fittrackee:latest` | — |
+
+The strava-sync container runs every hour and executes `run_sync.sh`, which
+runs three steps:
+
+1. **`sync_raw.py`** — Fetches specific Strava activities by hardcoded ID and
+   uploads raw (unfiltered) GPS data to FitTrackee
+2. **`merge_aw.py`** — Finds dual-device rides (Apple Watch + XOSS/CYCPLUS),
+   merges GPS/speed from AW with cadence from the other device
+3. **DB cleanup** — Removes speed values > 100 m/s from workout segments
+
+### Environment Configuration
+
+Key env vars set in `docker-compose.yaml`:
+
+```yaml
+FITTRACKEE_HOST=fittrackee      # Docker service name
+FITTRACKEE_PORT=5000            # Internal container port
+POSTGRES_HOST=fittrackee-db     # Docker service name
+POSTGRES_PASSWORD=mysecretpassword
+```
+
+The `.env` and token JSON files are mounted read-only from
+`/opt/fittrackee/strava-to-fittrackee-secrets/_data/`.
+
+### Building
+
+```sh
+cd strava-sync-src
+docker build -t shanbs/strava-to-fittrackee:latest .
+docker compose up -d strava-sync   # from /opt/fittrackee
+```
+
+---
+
+## Original Upstream Documentation
+
+The sections below describe the original `s2f.py` library usage.
 
 ![api_logo_pwrdBy_strava_horiz_light](https://github.com/jat255/strava-to-fittrackee/assets/1278301/983ca56a-3567-49ae-b476-15d97506eba1)
 
