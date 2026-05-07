@@ -40,6 +40,9 @@ python3 merge_aw.py $MERGE_FROM --to $(date +%Y-%m-%d)
 # Save last merge date
 date +%Y-%m-%d > $LAST_MERGE_FILE
 
+echo "=== Cleaning up duplicates ==="
+python3 cleanup_dupes.py
+
 echo "=== Cleaning bad speed points ==="
 python3 -c "
 import psycopg2
