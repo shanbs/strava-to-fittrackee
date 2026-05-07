@@ -128,7 +128,6 @@ def upload_gpx(gpx_content, sport_id=1):
 def delete_workout(strava_id):
     """Delete a workout from FitTrackee by Strava ID."""
     print(f"    Trying to delete strava_id {strava_id}...")
-    # Find workout by Strava ID in notes
     r = requests.get(f'{FITTRACKEE_URL}/api/workouts?per_page=100', headers=ft_headers)
     if r.status_code != 200:
         print(f"    Failed to get workouts: {r.status_code}")
@@ -136,7 +135,8 @@ def delete_workout(strava_id):
     workouts = r.json()['data']['workouts']
     print(f"    Checking {len(workouts)} workouts...")
     for w in workouts:
-        notes = w.get('notes', '')
+        notes = w.get('notes', '') or ''
+        print(f"      Workout {w['id']}: notes='{notes[:50]}...'")
         if f'strava.com/activities/{strava_id}' in notes:
             print(f"    Found workout {w['id']}, deleting...")
             del_r = requests.delete(f'{FITTRACKEE_URL}/api/workouts/{w["id"]}', headers=ft_headers)
